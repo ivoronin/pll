@@ -42,7 +42,8 @@ func run() int {
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: pll [OPTIONS] <COMMAND>\n\n")
-		fmt.Fprintf(os.Stderr, "COMMAND is a shell command template where {} is replaced with each input line from stdin.\n\n")
+		fmt.Fprintf(os.Stderr,
+			"COMMAND is a shell command template where {} is replaced with each input line from stdin.\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 	}
@@ -55,7 +56,11 @@ func run() int {
 		return 0
 	}
 
-	interactiveErr := resolveInteractive(*interactive, jobs, bufferMode)
+	return runJobs(*interactive, jobs, bufferMode, chdir, *checkpointPath, *progress)
+}
+
+func runJobs(interactive bool, jobs *int, bufferMode *string, chdir *string, checkpointPath string, progress bool) int {
+	interactiveErr := resolveInteractive(interactive, jobs, bufferMode)
 	if interactiveErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", interactiveErr)
 
@@ -88,7 +93,7 @@ func run() int {
 
 	startTime := time.Now()
 
-	summary, runErr := executeJobs(allJobs, *jobs, *interactive, *bufferMode, *checkpointPath, *progress)
+	summary, runErr := executeJobs(allJobs, *jobs, interactive, *bufferMode, checkpointPath, progress)
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
