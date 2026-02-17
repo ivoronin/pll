@@ -23,31 +23,31 @@ const (
 // Progress renders a terminal progress bar on stderr.
 // It is safe for concurrent use. When stderr is not a TTY, all methods are no-ops.
 type Progress struct {
-	mu             *sync.Mutex
-	total          int
-	done           int
-	enabled        bool
-	writer         *colorprofile.Writer
-	filled         lipgloss.Style
-	empty          lipgloss.Style
-	text           lipgloss.Style
+	mu           *sync.Mutex
+	total        int
+	done         int
+	enabled      bool
+	writer       *colorprofile.Writer
+	filled       lipgloss.Style
+	empty        lipgloss.Style
+	text         lipgloss.Style
 	maxSuffixLen int
-	ticker         *time.Ticker
-	stopTicker     chan struct{}
+	ticker       *time.Ticker
+	stopTicker   chan struct{}
 }
 
-func newProgress(mu *sync.Mutex, total int) *Progress {
+func newProgress(mutex *sync.Mutex, total int) *Progress {
 	if !term.IsTerminal(os.Stderr.Fd()) {
-		return &Progress{mu: mu}
+		return &Progress{mu: mutex}
 	}
 
-	w := colorprofile.NewWriter(os.Stderr, os.Environ())
+	writer := colorprofile.NewWriter(os.Stderr, os.Environ())
 
-	p := &Progress{
-		mu:         mu,
+	progress := &Progress{
+		mu:         mutex,
 		total:      total,
 		enabled:    true,
-		writer:     w,
+		writer:     writer,
 		filled:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
 		empty:      lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		text:       lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
@@ -58,64 +58,20 @@ func newProgress(mu *sync.Mutex, total int) *Progress {
 	go func() {
 		for {
 			select {
-			case <-p.ticker.C:
-				p.mu.Lock()
-				p.clear()
-				p.draw()
-				p.mu.Unlock()
-			case <-p.stopTicker:
+			case <-progress.ticker.C:
+				progress.mu.Lock()
+				progress.clear()
+				progress.draw()
+				progress.mu.Unlock()
+			case <-progress.stopTicker:
 				return
 			}
 		}
 	}()
 
-	p.draw()
+	progress.draw()
 
-	return p
-}
-
-// clear erases the current progress bar line. Caller must hold the mutex.
-func (p *Progress) clear() {
-	if !p.enabled {
-		return
-	}
-
-	_, _ = fmt.Fprint(os.Stderr, "\r\033[K")
-}
-
-// draw renders the progress bar on stderr. Caller must hold the mutex.
-func (p *Progress) draw() {
-	if !p.enabled {
-		return
-	}
-
-	width := defaultWidth
-	if w, _, err := term.GetSize(os.Stderr.Fd()); err == nil && w > 0 {
-		width = w
-	}
-
-	suffix := fmt.Sprintf(" %d/%d", p.done, p.total)
-
-	if len(suffix) > p.maxSuffixLen {
-		p.maxSuffixLen = len(suffix)
-	}
-	suffix += strings.Repeat(" ", p.maxSuffixLen-len(suffix))
-
-	barWidth := width - len(suffix)
-	barWidth = max(barWidth, minBarWidth)
-
-	filledCount := 0
-	if p.total > 0 {
-		filledCount = barWidth * p.done / p.total
-	}
-
-	emptyCount := barWidth - filledCount
-
-	bar := p.filled.Render(strings.Repeat(barFilled, filledCount)) +
-		p.empty.Render(strings.Repeat(barEmpty, emptyCount)) +
-		p.text.Render(suffix)
-
-	_, _ = lipgloss.Fprint(p.writer, bar)
+	return progress
 }
 
 // Inc increments the completion counter and redraws the bar.
@@ -141,8 +97,56 @@ func (p *Progress) Done() {
 		p.ticker.Stop()
 		close(p.stopTicker)
 	}
+
 	p.clear()
 	p.enabled = false
+}
+
+// clear erases the current progress bar line. Caller must hold the mutex.
+func (p *Progress) clear() {
+	if !p.enabled {
+		return
+	}
+
+	_, _ = fmt.Fprint(os.Stderr, "\r\033[K")
+}
+
+// draw renders the progress bar on stderr. Caller must hold the mutex.
+func (p *Progress) draw() {
+	if !p.enabled {
+		return
+	}
+
+	width := defaultWidth
+
+	termWidth, _, err := term.GetSize(os.Stderr.Fd())
+	if err == nil && termWidth > 0 {
+		width = termWidth
+	}
+
+	suffix := fmt.Sprintf(" %d/%d", p.done, p.total)
+
+	if len(suffix) > p.maxSuffixLen {
+		p.maxSuffixLen = len(suffix)
+	}
+
+	suffix += strings.Repeat(" ", p.maxSuffixLen-len(suffix))
+
+	barWidth := width - len(suffix)
+	barWidth = max(barWidth, minBarWidth)
+
+	filledCount := 0
+	if p.total > 0 {
+		filledCount = barWidth * p.done / p.total
+	}
+
+	emptyCount := barWidth - filledCount
+
+	bar := p.filled.Render(strings.Repeat(barFilled, filledCount)) +
+		p.empty.Render(strings.Repeat(barEmpty, emptyCount)) +
+		p.text.Render(suffix)
+
+	_, _ = lipgloss.Fprint(p.writer, bar)
 }
 
 // clearingWriter wraps a destination writer, clearing and redrawing the

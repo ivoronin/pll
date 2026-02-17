@@ -59,26 +59,6 @@ func (f *Factory) DoneProgress() {
 	}
 }
 
-// wrapDest returns a clearingWriter if progress is enabled, otherwise returns dest as-is.
-// The caller must hold the mutex.
-func (f *Factory) wrapDest(dest io.Writer) io.Writer {
-	if f.progress != nil {
-		return &clearingWriter{dest: dest, progress: f.progress}
-	}
-
-	return dest
-}
-
-// wrapLocked returns a lockedWriter if progress is enabled, otherwise returns dest as-is.
-// The writer acquires the mutex itself.
-func (f *Factory) wrapLocked(dest io.Writer) io.Writer {
-	if f.progress != nil {
-		return &lockedWriter{dest: dest, progress: f.progress}
-	}
-
-	return dest
-}
-
 // NewWriters creates a new set of writers for a single job.
 func (f *Factory) NewWriters() *Writers {
 	switch f.mode {
@@ -119,6 +99,26 @@ func (f *Factory) NewWriters() *Writers {
 	default:
 		return &Writers{Stdout: os.Stdout, Stderr: os.Stderr, Flush: func() {}}
 	}
+}
+
+// wrapDest returns a clearingWriter if progress is enabled, otherwise returns dest as-is.
+// The caller must hold the mutex.
+func (f *Factory) wrapDest(dest io.Writer) io.Writer {
+	if f.progress != nil {
+		return &clearingWriter{dest: dest, progress: f.progress}
+	}
+
+	return dest
+}
+
+// wrapLocked returns a lockedWriter if progress is enabled, otherwise returns dest as-is.
+// The writer acquires the mutex itself.
+func (f *Factory) wrapLocked(dest io.Writer) io.Writer {
+	if f.progress != nil {
+		return &lockedWriter{dest: dest, progress: f.progress}
+	}
+
+	return dest
 }
 
 // lineWriter writes complete lines atomically under a shared mutex.
