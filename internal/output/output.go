@@ -30,8 +30,9 @@ type Writers struct {
 
 // Factory creates Writers for each job based on the buffering mode.
 type Factory struct {
-	mode Mode
-	mu   sync.Mutex
+	mode     Mode
+	mu       sync.Mutex
+	progress *Progress
 }
 
 // NewFactory creates a Factory with the specified buffering mode.
@@ -39,15 +40,58 @@ func NewFactory(mode Mode) *Factory {
 	return &Factory{mode: mode}
 }
 
+// EnableProgress activates a progress bar on stderr with the given total job count.
+func (f *Factory) EnableProgress(total int) {
+	f.progress = newProgress(&f.mu, total)
+}
+
+// IncProgress increments the progress bar by one completed job.
+func (f *Factory) IncProgress() {
+	if f.progress != nil {
+		f.progress.Inc()
+	}
+}
+
+// DoneProgress clears the progress bar and disables further drawing.
+func (f *Factory) DoneProgress() {
+	if f.progress != nil {
+		f.progress.Done()
+	}
+}
+
+// wrapDest returns a clearingWriter if progress is enabled, otherwise returns dest as-is.
+// The caller must hold the mutex.
+func (f *Factory) wrapDest(dest io.Writer) io.Writer {
+	if f.progress != nil {
+		return &clearingWriter{dest: dest, progress: f.progress}
+	}
+
+	return dest
+}
+
+// wrapLocked returns a lockedWriter if progress is enabled, otherwise returns dest as-is.
+// The writer acquires the mutex itself.
+func (f *Factory) wrapLocked(dest io.Writer) io.Writer {
+	if f.progress != nil {
+		return &lockedWriter{dest: dest, progress: f.progress}
+	}
+
+	return dest
+}
+
 // NewWriters creates a new set of writers for a single job.
 func (f *Factory) NewWriters() *Writers {
 	switch f.mode {
 	case ModeNone:
-		return &Writers{Stdout: os.Stdout, Stderr: os.Stderr, Flush: func() {}}
+		return &Writers{
+			Stdout: f.wrapLocked(os.Stdout),
+			Stderr: f.wrapLocked(os.Stderr),
+			Flush:  func() {},
+		}
 	case ModeLine:
 		return &Writers{
-			Stdout: &lineWriter{mu: &f.mu, dest: os.Stdout},
-			Stderr: &lineWriter{mu: &f.mu, dest: os.Stderr},
+			Stdout: &lineWriter{mu: &f.mu, dest: f.wrapDest(os.Stdout)},
+			Stderr: &lineWriter{mu: &f.mu, dest: f.wrapDest(os.Stderr)},
 			Flush:  func() {},
 		}
 	case ModeJob:
@@ -60,8 +104,16 @@ func (f *Factory) NewWriters() *Writers {
 				f.mu.Lock()
 				defer f.mu.Unlock()
 
+				if f.progress != nil {
+					f.progress.clear()
+				}
+
 				_, _ = stdoutBuf.WriteTo(os.Stdout)
 				_, _ = stderrBuf.WriteTo(os.Stderr)
+
+				if f.progress != nil {
+					f.progress.draw()
+				}
 			},
 		}
 	default:

@@ -50,6 +50,8 @@ func (rs *runState) processJob(ctx context.Context, currentJob *job.Job) {
 	}
 	rs.mutex.Unlock()
 
+	rs.cfg.Output.IncProgress()
+
 	if rs.cfg.Checkpoint != nil {
 		recordErr := rs.cfg.Checkpoint.Record(currentJob, result)
 		if recordErr != nil {
@@ -86,6 +88,8 @@ func Run(ctx context.Context, cfg Config, jobs []*job.Job) (*Summary, error) {
 				state.mutex.Lock()
 				state.summary.Skipped++
 				state.mutex.Unlock()
+
+				state.cfg.Output.IncProgress()
 
 				continue
 			}

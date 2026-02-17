@@ -22,8 +22,9 @@ import (
 var (
 	version = "dev"
 
-	errConflictingJobsFlag  = errors.New("--interactive and --jobs are mutually exclusive")
-	errConflictingBufferFlag = errors.New("--interactive and --buffer are mutually exclusive")
+	errConflictingJobsFlag     = errors.New("--interactive and --jobs are mutually exclusive")
+	errConflictingBufferFlag   = errors.New("--interactive and --buffer are mutually exclusive")
+	errConflictingProgressFlag = errors.New("--interactive and --progress are mutually exclusive")
 )
 
 func main() {
@@ -36,6 +37,7 @@ func run() int {
 	jobs := flag.IntP("jobs", "j", runtime.NumCPU(), "number of parallel jobs")
 	checkpointPath := flag.StringP("checkpoint", "c", "", "path to checkpoint file")
 	bufferMode := flag.StringP("buffer", "b", "line", "output buffering mode: none, line, job")
+	progress := flag.BoolP("progress", "p", false, "show progress bar on stderr")
 	chdir := flag.StringP("chdir", "C", "", "change to directory before running command (supports {} placeholder)")
 
 	flag.Parse()
@@ -80,7 +82,7 @@ func run() int {
 
 	startTime := time.Now()
 
-	summary, runErr := executeJobs(allJobs, *jobs, *interactive, *bufferMode, *checkpointPath)
+	summary, runErr := executeJobs(allJobs, *jobs, *interactive, *bufferMode, *checkpointPath, *progress)
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
@@ -112,6 +114,10 @@ func resolveInteractive(interactive bool, jobs *int, bufferMode *string) error {
 
 	if flag.Lookup("buffer").Changed {
 		return errConflictingBufferFlag
+	}
+
+	if flag.Lookup("progress").Changed {
+		return errConflictingProgressFlag
 	}
 
 	*jobs = 1
@@ -160,13 +166,20 @@ func executeJobs(
 	interactive bool,
 	bufferMode string,
 	checkpointPath string,
+	progress bool,
 ) (*runner.Summary, error) {
 	mode := output.Mode(bufferMode)
+	factory := output.NewFactory(mode)
+
+	if progress {
+		factory.EnableProgress(len(allJobs))
+		defer factory.DoneProgress()
+	}
 
 	cfg := runner.Config{
 		Jobs:        jobCount,
 		Interactive: interactive,
-		Output:      output.NewFactory(mode),
+		Output:      factory,
 	}
 
 	if checkpointPath != "" {
