@@ -24,10 +24,11 @@ type Config struct {
 
 // Summary tracks the outcome counts of a completed run.
 type Summary struct {
-	Total     int
-	Succeeded int
-	Failed    int
-	Skipped   int
+	Total      int
+	Succeeded  int
+	Failed     int
+	Skipped    int
+	FailedJobs []*job.Job
 }
 
 type runState struct {
@@ -45,6 +46,7 @@ func (rs *runState) processJob(ctx context.Context, currentJob *job.Job) {
 		rs.summary.Succeeded++
 	} else {
 		rs.summary.Failed++
+		rs.summary.FailedJobs = append(rs.summary.FailedJobs, currentJob)
 	}
 	rs.mutex.Unlock()
 

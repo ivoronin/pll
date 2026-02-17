@@ -81,6 +81,10 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
 
+	for _, j := range summary.FailedJobs {
+		fmt.Fprintf(os.Stderr, "pll: job failed: '%s' in '%s'\n", j.Command, j.Dir)
+	}
+
 	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d skipped (total: %d)\n",
 		summary.Succeeded, summary.Failed, summary.Skipped, summary.Total)
 
