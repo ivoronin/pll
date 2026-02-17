@@ -30,6 +30,7 @@ pll reads lines from stdin, replaces `{}` placeholders in a command template wit
 - Three output buffering modes: none (passthrough), line (atomic lines), job (buffer entire output)
 - BoltDB checkpoint persistence for resumable execution, content-addressed by SHA256 of command and directory
 - Interactive mode (`-i`) with stdin passthrough for sequential execution
+- Terminal progress bar for tracking job completion (`-p`)
 - Graceful interruption via Ctrl+C with in-progress job completion
 
 ## Installation
@@ -61,6 +62,13 @@ pll 'curl -sS https://{}/.well-known/health' < domains.txt
 ```bash
 # Limit to 4 concurrent jobs
 pll -j4 'scp config.yml {}:/etc/app/' < hosts.txt
+```
+
+### Progress Bar
+
+```bash
+# Show a progress bar on stderr
+pll -j4 -p 'rsync -a {}:/data /backup/{}' < hosts.txt
 ```
 
 ### Interactive Mode
@@ -95,6 +103,8 @@ pll -c deploy.db 'ansible-playbook -l {} site.yml' < hosts.txt
 pll -c deploy.db 'ansible-playbook -l {} site.yml' < hosts.txt
 ```
 
+Each job is identified by a SHA256 hash of its command and working directory. Results are stored in a BoltDB file. On re-run, only previously successful jobs are skipped; failed jobs are always retried.
+
 ### Working Directory
 
 ```bash
@@ -107,6 +117,7 @@ pll -C '/srv/{}' 'git pull' < repos.txt
 ```
 -i, --interactive  run jobs sequentially with stdin connected (mutually exclusive with -j)
 -j, --jobs         number of parallel jobs (default: number of CPU cores)
+-p, --progress     show progress bar on stderr
 -b, --buffer       output buffering mode: none, line, job (default: line)
 -c, --checkpoint   path to checkpoint file for resumable execution
 -C, --chdir        change to directory before running command (supports {})
