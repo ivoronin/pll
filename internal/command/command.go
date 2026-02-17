@@ -2,6 +2,7 @@
 package command
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/ivoronin/pll/internal/job"
@@ -20,8 +21,10 @@ func NewTemplate(raw string, dir string) *Template {
 
 // Expand replaces {} placeholders in the command and directory with the given line.
 func (t *Template) Expand(line string) *job.Job {
+	dir, _ := filepath.Abs(strings.ReplaceAll(t.dir, "{}", line))
+
 	return &job.Job{
 		Command: strings.ReplaceAll(t.raw, "{}", line),
-		Dir:     strings.ReplaceAll(t.dir, "{}", line),
+		Dir:     dir,
 	}
 }
