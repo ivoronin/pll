@@ -1,3 +1,4 @@
+// Package runner provides the parallel job execution engine.
 package runner
 
 import (
@@ -13,6 +14,7 @@ import (
 	"github.com/ivoronin/pll/internal/output"
 )
 
+// Config holds settings for a parallel execution run.
 type Config struct {
 	Jobs        int
 	Checkpoint  *checkpoint.Store
@@ -20,6 +22,7 @@ type Config struct {
 	Output      *output.Factory
 }
 
+// Summary tracks the outcome counts of a completed run.
 type Summary struct {
 	Total     int
 	Succeeded int
@@ -27,89 +30,115 @@ type Summary struct {
 	Skipped   int
 }
 
+type runState struct {
+	cfg     Config
+	summary *Summary
+	mutex   sync.Mutex
+	runErr  error
+}
+
+func (rs *runState) processJob(ctx context.Context, currentJob *job.Job) {
+	result := execute(ctx, rs.cfg, currentJob)
+
+	rs.mutex.Lock()
+	if result.Status == job.StatusSuccess {
+		rs.summary.Succeeded++
+	} else {
+		rs.summary.Failed++
+	}
+	rs.mutex.Unlock()
+
+	if rs.cfg.Checkpoint != nil {
+		recordErr := rs.cfg.Checkpoint.Record(currentJob, result)
+		if recordErr != nil {
+			rs.mutex.Lock()
+			rs.runErr = errors.Join(rs.runErr, fmt.Errorf("checkpoint record: %w", recordErr))
+			rs.mutex.Unlock()
+		}
+	}
+}
+
+// Run executes all jobs in parallel according to the given configuration.
 func Run(ctx context.Context, cfg Config, jobs []*job.Job) (*Summary, error) {
+	state := &runState{
+		cfg:     cfg,
+		summary: &Summary{Total: len(jobs)},
+	}
+
 	sem := make(chan struct{}, cfg.Jobs)
-	var mu sync.Mutex
-	summary := &Summary{Total: len(jobs)}
 
-	var wg sync.WaitGroup
-	var runErr error
+	var waitGroup sync.WaitGroup
 
-	for _, j := range jobs {
+	for _, currentJob := range jobs {
 		if ctx.Err() != nil {
 			break
 		}
 
 		if cfg.Checkpoint != nil {
-			shouldRun, err := cfg.Checkpoint.ShouldRun(j)
-			if err != nil {
-				return summary, fmt.Errorf("checkpoint check: %w", err)
+			shouldRun, checkErr := cfg.Checkpoint.ShouldRun(currentJob)
+			if checkErr != nil {
+				return state.summary, fmt.Errorf("checkpoint check: %w", checkErr)
 			}
+
 			if !shouldRun {
-				mu.Lock()
-				summary.Skipped++
-				mu.Unlock()
+				state.mutex.Lock()
+				state.summary.Skipped++
+				state.mutex.Unlock()
+
 				continue
 			}
 		}
 
 		sem <- struct{}{}
+
 		if ctx.Err() != nil {
 			<-sem
+
 			break
 		}
 
-		wg.Add(1)
-		go func(j *job.Job) {
-			defer wg.Done()
+		waitGroup.Add(1)
+
+		go func(currentJob *job.Job) {
+			defer waitGroup.Done()
 			defer func() { <-sem }()
 
-			result := execute(ctx, cfg, j)
-
-			mu.Lock()
-			if result.Status == job.StatusSuccess {
-				summary.Succeeded++
-			} else {
-				summary.Failed++
-			}
-			mu.Unlock()
-
-			if cfg.Checkpoint != nil {
-				if err := cfg.Checkpoint.Record(j, result); err != nil {
-					mu.Lock()
-					runErr = errors.Join(runErr, fmt.Errorf("checkpoint record: %w", err))
-					mu.Unlock()
-				}
-			}
-		}(j)
+			state.processJob(ctx, currentJob)
+		}(currentJob)
 	}
 
-	wg.Wait()
-	return summary, runErr
+	waitGroup.Wait()
+
+	return state.summary, state.runErr
 }
 
-func execute(ctx context.Context, cfg Config, j *job.Job) job.Result {
-	cmd := exec.CommandContext(ctx, "sh", "-c", j.Command)
+func execute(ctx context.Context, cfg Config, currentJob *job.Job) job.Result {
+	//nolint:gosec // pll executes user-provided shell commands by design
+	cmd := exec.CommandContext(ctx, "sh", "-c", currentJob.Command)
 
-	w := cfg.Output.NewWriters()
-	cmd.Stdout = w.Stdout
-	cmd.Stderr = w.Stderr
-	defer w.Flush()
+	writers := cfg.Output.NewWriters()
+	cmd.Stdout = writers.Stdout
+	cmd.Stderr = writers.Stderr
 
-	if j.Dir != "" {
-		cmd.Dir = j.Dir
+	defer writers.Flush()
+
+	if currentJob.Dir != "" {
+		cmd.Dir = currentJob.Dir
 	}
 
 	if cfg.Interactive {
 		cmd.Stdin = os.Stdin
 	}
 
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	if runErr != nil {
 		exitCode := 1
+
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(runErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
+
 		return job.Result{Status: job.StatusFailure, ExitCode: exitCode}
 	}
 

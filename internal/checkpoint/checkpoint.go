@@ -1,9 +1,11 @@
+// Package checkpoint provides persistent job result storage using BoltDB.
 package checkpoint
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ivoronin/pll/internal/job"
@@ -12,65 +14,84 @@ import (
 
 var bucketName = []byte("results")
 
+// Store wraps a BoltDB database for persisting job results.
 type Store struct {
-	db *bolt.DB
+	database *bolt.DB
 }
 
+// Open creates or opens a checkpoint database at the given path.
 func Open(path string) (*Store, error) {
-	db, err := bolt.Open(path, 0o600, nil)
-	if err != nil {
-		return nil, fmt.Errorf("opening checkpoint db: %w", err)
+	database, openErr := bolt.Open(path, 0o600, nil)
+	if openErr != nil {
+		return nil, fmt.Errorf("opening checkpoint db: %w", openErr)
 	}
 
-	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketName)
-		return err
+	bucketErr := database.Update(func(tx *bolt.Tx) error {
+		_, createErr := tx.CreateBucketIfNotExists(bucketName)
+
+		return createErr
 	})
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("creating bucket: %w", err)
+	if bucketErr != nil {
+		closeErr := database.Close()
+
+		return nil, errors.Join(fmt.Errorf("creating bucket: %w", bucketErr), closeErr)
 	}
 
-	return &Store{db: db}, nil
+	return &Store{database: database}, nil
 }
 
-func (s *Store) ShouldRun(j *job.Job) (bool, error) {
+// ShouldRun checks whether a job needs to be executed based on checkpoint data.
+// Returns true if the job has not been recorded or previously failed.
+func (s *Store) ShouldRun(currentJob *job.Job) (bool, error) {
 	var shouldRun bool
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketName)
-		v := b.Get(s.key(j))
-		if v == nil {
+
+	viewErr := s.database.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketName)
+		value := bucket.Get(s.key(currentJob))
+
+		if value == nil {
 			shouldRun = true
+
 			return nil
 		}
+
 		var result job.Result
-		if err := json.Unmarshal(v, &result); err != nil {
+
+		unmarshalErr := json.Unmarshal(value, &result)
+		if unmarshalErr == nil {
+			shouldRun = result.Status != job.StatusSuccess
+		} else {
 			shouldRun = true
-			return nil
 		}
-		shouldRun = result.Status != job.StatusSuccess
+
 		return nil
 	})
-	return shouldRun, err
+
+	return shouldRun, viewErr
 }
 
-func (s *Store) Record(j *job.Job, result job.Result) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketName)
-		v, err := json.Marshal(result)
-		if err != nil {
-			return err
+// Record saves the result of a job execution to the checkpoint database.
+func (s *Store) Record(currentJob *job.Job, result job.Result) error {
+	return s.database.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketName)
+
+		value, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return marshalErr
 		}
-		return b.Put(s.key(j), v)
+
+		return bucket.Put(s.key(currentJob), value)
 	})
 }
 
+// Close closes the underlying BoltDB database.
 func (s *Store) Close() error {
-	return s.db.Close()
+	return s.database.Close()
 }
 
-func (s *Store) key(j *job.Job) []byte {
-	h := sha256.Sum256([]byte(j.Dir + "\x00" + j.Command))
-	k := hex.EncodeToString(h[:])
-	return []byte(k)
+func (s *Store) key(currentJob *job.Job) []byte {
+	hash := sha256.Sum256([]byte(currentJob.Dir + "\x00" + currentJob.Command))
+	encoded := hex.EncodeToString(hash[:])
+
+	return []byte(encoded)
 }

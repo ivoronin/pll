@@ -1,3 +1,4 @@
+// Command pll runs shell commands in parallel with output buffering and checkpoints.
 package main
 
 import (
@@ -16,78 +17,119 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
+var version = "dev"
+
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
+	versionFlag := flag.Bool("version", false, "print version and exit")
 	jobs := flag.IntP("jobs", "j", runtime.NumCPU(), "number of parallel jobs")
 	checkpointPath := flag.StringP("checkpoint", "c", "", "path to checkpoint file")
 	bufferMode := flag.StringP("buffer", "b", "line", "output buffering mode: none, line, job")
 	chdir := flag.StringP("chdir", "C", "", "change to directory before running command (supports {} placeholder)")
+
 	flag.Parse()
+
+	if *versionFlag {
+		_, _ = fmt.Fprintf(os.Stdout, "pll %s\n", version)
+
+		return 0
+	}
 
 	if *chdir == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "pll: %v\n", err)
-			os.Exit(1)
+
+			return 1
 		}
+
 		*chdir = cwd
 	}
 
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: pll [flags] <command template>")
 		flag.PrintDefaults()
-		os.Exit(2)
+
+		return 2
 	}
 
-	tmpl := command.NewTemplate(flag.Arg(0), *chdir)
+	allJobs, err := readJobs(flag.Arg(0), *chdir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", err)
 
-	var allJobs []*job.Job
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		allJobs = append(allJobs, tmpl.Expand(scanner.Text()))
-	}
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "pll: reading stdin: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if len(allJobs) == 0 {
-		os.Exit(0)
+		return 0
 	}
 
-	interactive := *jobs == 1
-	mode := output.Mode(*bufferMode)
+	summary, runErr := executeJobs(allJobs, *jobs, *bufferMode, *checkpointPath)
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
+	}
+
+	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d skipped (total: %d)\n",
+		summary.Succeeded, summary.Failed, summary.Skipped, summary.Total)
+
+	if summary.Failed > 0 || runErr != nil {
+		return 1
+	}
+
+	return 0
+}
+
+func readJobs(commandTemplate string, chdir string) ([]*job.Job, error) {
+	tmpl := command.NewTemplate(commandTemplate, chdir)
+
+	var allJobs []*job.Job
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for scanner.Scan() {
+		allJobs = append(allJobs, tmpl.Expand(scanner.Text()))
+	}
+
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		return nil, fmt.Errorf("reading stdin: %w", scanErr)
+	}
+
+	return allJobs, nil
+}
+
+func executeJobs(allJobs []*job.Job, jobCount int, bufferMode string, checkpointPath string) (*runner.Summary, error) {
+	interactive := jobCount == 1
+
+	mode := output.Mode(bufferMode)
 	if interactive {
 		mode = output.ModeNone
 	}
 
 	cfg := runner.Config{
-		Jobs:        *jobs,
+		Jobs:        jobCount,
 		Interactive: interactive,
 		Output:      output.NewFactory(mode),
 	}
 
-	if *checkpointPath != "" {
-		store, err := checkpoint.Open(*checkpointPath)
+	if checkpointPath != "" {
+		store, err := checkpoint.Open(checkpointPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "pll: %v\n", err)
-			os.Exit(1)
+			return &runner.Summary{Total: len(allJobs)}, err
 		}
-		defer store.Close()
+
+		defer func() {
+			_ = store.Close()
+		}()
+
 		cfg.Checkpoint = store
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	summary, err := runner.Run(ctx, cfg, allJobs)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pll: %v\n", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d skipped (total: %d)\n",
-		summary.Succeeded, summary.Failed, summary.Skipped, summary.Total)
-
-	if summary.Failed > 0 || err != nil {
-		os.Exit(1)
-	}
+	return runner.Run(ctx, cfg, allJobs)
 }

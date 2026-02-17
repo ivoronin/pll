@@ -1,3 +1,4 @@
+// Package output provides output buffering for parallel job execution.
 package output
 
 import (
@@ -7,12 +8,16 @@ import (
 	"sync"
 )
 
+// Mode specifies the output buffering strategy.
 type Mode string
 
 const (
+	// ModeNone passes output directly to stdout/stderr without buffering.
 	ModeNone Mode = "none"
+	// ModeLine buffers output line-by-line, writing complete lines atomically.
 	ModeLine Mode = "line"
-	ModeJob  Mode = "job"
+	// ModeJob buffers all output per job, flushing when the job completes.
+	ModeJob Mode = "job"
 )
 
 // Writers holds stdout and stderr writers for a single job,
@@ -29,30 +34,34 @@ type Factory struct {
 	mu   sync.Mutex
 }
 
+// NewFactory creates a Factory with the specified buffering mode.
 func NewFactory(mode Mode) *Factory {
 	return &Factory{mode: mode}
 }
 
+// NewWriters creates a new set of writers for a single job.
 func (f *Factory) NewWriters() *Writers {
 	switch f.mode {
 	case ModeNone:
 		return &Writers{Stdout: os.Stdout, Stderr: os.Stderr, Flush: func() {}}
 	case ModeLine:
 		return &Writers{
-			Stdout: &lineWriter{mu: &f.mu, w: os.Stdout},
-			Stderr: &lineWriter{mu: &f.mu, w: os.Stderr},
+			Stdout: &lineWriter{mu: &f.mu, dest: os.Stdout},
+			Stderr: &lineWriter{mu: &f.mu, dest: os.Stderr},
 			Flush:  func() {},
 		}
 	case ModeJob:
-		var stdout, stderr bytes.Buffer
+		var stdoutBuf, stderrBuf bytes.Buffer
+
 		return &Writers{
-			Stdout: &stdout,
-			Stderr: &stderr,
+			Stdout: &stdoutBuf,
+			Stderr: &stderrBuf,
 			Flush: func() {
 				f.mu.Lock()
 				defer f.mu.Unlock()
-				stdout.WriteTo(os.Stdout)
-				stderr.WriteTo(os.Stderr)
+
+				_, _ = stdoutBuf.WriteTo(os.Stdout)
+				_, _ = stderrBuf.WriteTo(os.Stderr)
 			},
 		}
 	default:
@@ -62,26 +71,32 @@ func (f *Factory) NewWriters() *Writers {
 
 // lineWriter writes complete lines atomically under a shared mutex.
 type lineWriter struct {
-	mu  *sync.Mutex
-	w   io.Writer
-	buf []byte
+	mu   *sync.Mutex
+	dest io.Writer
+	buf  []byte
 }
 
-func (lw *lineWriter) Write(p []byte) (int, error) {
-	lw.buf = append(lw.buf, p...)
+func (lw *lineWriter) Write(data []byte) (int, error) {
+	lw.buf = append(lw.buf, data...)
+
 	for {
 		idx := bytes.IndexByte(lw.buf, '\n')
 		if idx < 0 {
 			break
 		}
+
 		line := lw.buf[:idx+1]
+
 		lw.mu.Lock()
-		_, err := lw.w.Write(line)
+		_, writeErr := lw.dest.Write(line)
 		lw.mu.Unlock()
-		if err != nil {
-			return len(p), err
+
+		if writeErr != nil {
+			return len(data), writeErr
 		}
+
 		lw.buf = lw.buf[idx+1:]
 	}
-	return len(p), nil
+
+	return len(data), nil
 }
