@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"time"
 
 	"github.com/ivoronin/pll/internal/checkpoint"
 	"github.com/ivoronin/pll/internal/command"
@@ -77,17 +78,21 @@ func run() int {
 		return 0
 	}
 
+	startTime := time.Now()
+
 	summary, runErr := executeJobs(allJobs, *jobs, *interactive, *bufferMode, *checkpointPath)
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
 
+	elapsed := time.Since(startTime)
+
 	for _, j := range summary.FailedJobs {
 		fmt.Fprintf(os.Stderr, "pll: job failed: '%s' in '%s'\n", j.Command, j.Dir)
 	}
 
-	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d skipped (total: %d)\n",
-		summary.Succeeded, summary.Failed, summary.Skipped, summary.Total)
+	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d skipped (total: %d) in %s\n",
+		summary.Succeeded, summary.Failed, summary.Skipped, summary.Total, elapsed.Round(time.Second))
 
 	if summary.Failed > 0 || runErr != nil {
 		return 1
