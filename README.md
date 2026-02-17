@@ -29,7 +29,7 @@ pll reads lines from stdin, replaces `{}` placeholders in a command template wit
 - `{}` placeholder expansion in both command and working directory templates
 - Three output buffering modes: none (passthrough), line (atomic lines), job (buffer entire output)
 - BoltDB checkpoint persistence for resumable execution, content-addressed by SHA256 of command and directory
-- Interactive mode with stdin passthrough when running a single job (`-j1`)
+- Interactive mode (`-i`) with stdin passthrough for sequential execution
 - Graceful interruption via Ctrl+C with in-progress job completion
 
 ## Installation
@@ -61,10 +61,16 @@ pll 'curl -sS https://{}/.well-known/health' < domains.txt
 ```bash
 # Limit to 4 concurrent jobs
 pll -j4 'scp config.yml {}:/etc/app/' < hosts.txt
-
-# Sequential execution (interactive mode, stdin passthrough)
-pll -j1 'ssh -t {} "sudo bash"' < hosts.txt
 ```
+
+### Interactive Mode
+
+```bash
+# Sequential execution with stdin connected to each process
+pll -i 'ssh -t {} "sudo bash"' < hosts.txt
+```
+
+`-i` forces jobs to 1 and connects stdin to the child process. Mutually exclusive with `-j`.
 
 ### Output Buffering
 
@@ -75,7 +81,7 @@ pll 'docker logs {}' < containers.txt
 # Job-level buffering - buffer entire output per job, flush on completion
 pll -b job 'kubectl logs {}' < pods.txt
 
-# No buffering - direct passthrough (default for -j1)
+# No buffering - direct passthrough (default for -i)
 pll -b none 'make -C {}' < projects.txt
 ```
 
@@ -99,6 +105,7 @@ pll -C '/srv/{}' 'git pull' < repos.txt
 ### Flags
 
 ```
+-i, --interactive  run jobs sequentially with stdin connected (mutually exclusive with -j)
 -j, --jobs         number of parallel jobs (default: number of CPU cores)
 -b, --buffer       output buffering mode: none, line, job (default: line)
 -c, --checkpoint   path to checkpoint file for resumable execution

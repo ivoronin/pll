@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -17,7 +18,11 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-var version = "dev"
+var (
+	version = "dev"
+
+	errConflictingFlags = errors.New("--interactive and --jobs are mutually exclusive")
+)
 
 func main() {
 	os.Exit(run())
@@ -25,6 +30,7 @@ func main() {
 
 func run() int {
 	versionFlag := flag.Bool("version", false, "print version and exit")
+	interactive := flag.BoolP("interactive", "i", false, "run jobs sequentially with stdin connected")
 	jobs := flag.IntP("jobs", "j", runtime.NumCPU(), "number of parallel jobs")
 	checkpointPath := flag.StringP("checkpoint", "c", "", "path to checkpoint file")
 	bufferMode := flag.StringP("buffer", "b", "line", "output buffering mode: none, line, job")
@@ -38,15 +44,18 @@ func run() int {
 		return 0
 	}
 
-	if *chdir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pll: %v\n", err)
+	interactiveErr := resolveInteractive(*interactive, jobs)
+	if interactiveErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", interactiveErr)
 
-			return 1
-		}
+		return 2
+	}
 
-		*chdir = cwd
+	chdirErr := resolveChdir(chdir)
+	if chdirErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", chdirErr)
+
+		return 1
 	}
 
 	if flag.NArg() != 1 {
@@ -67,7 +76,7 @@ func run() int {
 		return 0
 	}
 
-	summary, runErr := executeJobs(allJobs, *jobs, *bufferMode, *checkpointPath)
+	summary, runErr := executeJobs(allJobs, *jobs, *interactive, *bufferMode, *checkpointPath)
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
@@ -80,6 +89,35 @@ func run() int {
 	}
 
 	return 0
+}
+
+func resolveInteractive(interactive bool, jobs *int) error {
+	if !interactive {
+		return nil
+	}
+
+	if flag.Lookup("jobs").Changed {
+		return errConflictingFlags
+	}
+
+	*jobs = 1
+
+	return nil
+}
+
+func resolveChdir(chdir *string) error {
+	if *chdir != "" {
+		return nil
+	}
+
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		return cwdErr
+	}
+
+	*chdir = cwd
+
+	return nil
 }
 
 func readJobs(commandTemplate string, chdir string) ([]*job.Job, error) {
@@ -101,9 +139,13 @@ func readJobs(commandTemplate string, chdir string) ([]*job.Job, error) {
 	return allJobs, nil
 }
 
-func executeJobs(allJobs []*job.Job, jobCount int, bufferMode string, checkpointPath string) (*runner.Summary, error) {
-	interactive := jobCount == 1
-
+func executeJobs(
+	allJobs []*job.Job,
+	jobCount int,
+	interactive bool,
+	bufferMode string,
+	checkpointPath string,
+) (*runner.Summary, error) {
 	mode := output.Mode(bufferMode)
 	if interactive {
 		mode = output.ModeNone

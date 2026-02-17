@@ -127,7 +127,12 @@ func execute(ctx context.Context, cfg Config, currentJob *job.Job) job.Result {
 	}
 
 	if cfg.Interactive {
-		cmd.Stdin = os.Stdin
+		tty, ttyErr := os.Open("/dev/tty")
+		if ttyErr == nil {
+			defer func() { _ = tty.Close() }()
+
+			cmd.Stdin = tty
+		}
 	}
 
 	runErr := cmd.Run()
