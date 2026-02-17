@@ -21,7 +21,8 @@ import (
 var (
 	version = "dev"
 
-	errConflictingFlags = errors.New("--interactive and --jobs are mutually exclusive")
+	errConflictingJobsFlag  = errors.New("--interactive and --jobs are mutually exclusive")
+	errConflictingBufferFlag = errors.New("--interactive and --buffer are mutually exclusive")
 )
 
 func main() {
@@ -44,7 +45,7 @@ func run() int {
 		return 0
 	}
 
-	interactiveErr := resolveInteractive(*interactive, jobs)
+	interactiveErr := resolveInteractive(*interactive, jobs, bufferMode)
 	if interactiveErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", interactiveErr)
 
@@ -95,16 +96,21 @@ func run() int {
 	return 0
 }
 
-func resolveInteractive(interactive bool, jobs *int) error {
+func resolveInteractive(interactive bool, jobs *int, bufferMode *string) error {
 	if !interactive {
 		return nil
 	}
 
 	if flag.Lookup("jobs").Changed {
-		return errConflictingFlags
+		return errConflictingJobsFlag
+	}
+
+	if flag.Lookup("buffer").Changed {
+		return errConflictingBufferFlag
 	}
 
 	*jobs = 1
+	*bufferMode = string(output.ModeNone)
 
 	return nil
 }
@@ -151,9 +157,6 @@ func executeJobs(
 	checkpointPath string,
 ) (*runner.Summary, error) {
 	mode := output.Mode(bufferMode)
-	if interactive {
-		mode = output.ModeNone
-	}
 
 	cfg := runner.Config{
 		Jobs:        jobCount,
