@@ -40,6 +40,13 @@ func run() int {
 	progress := flag.BoolP("progress", "p", false, "show progress bar on stderr")
 	chdir := flag.StringP("chdir", "C", "", "change to directory before running command (supports {} placeholder)")
 
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: pll [OPTIONS] <COMMAND>\n\n")
+		fmt.Fprintf(os.Stderr, "COMMAND is a shell command template where {} is replaced with each input line from stdin.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+	}
+
 	flag.Parse()
 
 	if *versionFlag {
@@ -63,8 +70,7 @@ func run() int {
 	}
 
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: pll [flags] <command template>")
-		flag.PrintDefaults()
+		flag.Usage()
 
 		return 2
 	}
