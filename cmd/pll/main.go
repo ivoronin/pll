@@ -22,9 +22,10 @@ import (
 var (
 	version = "dev"
 
-	errConflictingJobsFlag     = errors.New("--interactive and --jobs are mutually exclusive")
-	errConflictingBufferFlag   = errors.New("--interactive and --buffer are mutually exclusive")
-	errConflictingProgressFlag = errors.New("--interactive and --progress are mutually exclusive")
+	errConflictingJobsFlag           = errors.New("--interactive and --jobs are mutually exclusive")
+	errConflictingBufferFlag         = errors.New("--interactive and --buffer are mutually exclusive")
+	errConflictingProgressFlag       = errors.New("--interactive and --progress are mutually exclusive")
+	errConflictingProgressBufferFlag = errors.New("--progress and --buffer none are mutually exclusive")
 )
 
 func main() {
@@ -51,6 +52,12 @@ func run() int {
 	interactiveErr := resolveInteractive(*interactive, jobs, bufferMode)
 	if interactiveErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", interactiveErr)
+
+		return 2
+	}
+
+	if *progress && *bufferMode == string(output.ModeNone) {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", errConflictingProgressBufferFlag)
 
 		return 2
 	}
