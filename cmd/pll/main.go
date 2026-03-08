@@ -109,11 +109,15 @@ func runJobs(
 
 	summary, runErr := executeJobs(allJobs, *jobs, interactive, *bufferMode,
 		checkpointPath, progress, timeout, failFast)
+	elapsed := time.Since(startTime)
+
+	return reportResults(summary, runErr, elapsed)
+}
+
+func reportResults(summary *runner.Summary, runErr error, elapsed time.Duration) int {
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
-
-	elapsed := time.Since(startTime)
 
 	for _, j := range summary.FailedJobs {
 		fmt.Fprintf(os.Stderr, "pll: job failed: '%s' in '%s'\n", j.Command, j.Dir)
