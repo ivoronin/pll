@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/ivoronin/pll/internal/checkpoint"
 	"github.com/ivoronin/pll/internal/job"
@@ -20,6 +21,8 @@ type Config struct {
 	Checkpoint  *checkpoint.Store
 	Interactive bool
 	Output      *output.Factory
+	Timeout     time.Duration
+	FailFast    bool
 }
 
 // Summary tracks the outcome counts of a completed run.
@@ -32,14 +35,38 @@ type Summary struct {
 }
 
 type runState struct {
-	cfg     Config
-	summary *Summary
-	mutex   sync.Mutex
-	runErr  error
+	cfg        Config
+	summary    *Summary
+	mutex      sync.Mutex
+	runErr     error
+	launchStop context.CancelFunc
 }
 
-func (rs *runState) processJob(ctx context.Context, currentJob *job.Job) {
-	result := execute(ctx, rs.cfg, currentJob)
+func (rs *runState) skipIfCheckpointed(currentJob *job.Job) (bool, error) {
+	if rs.cfg.Checkpoint == nil {
+		return false, nil
+	}
+
+	shouldRun, checkErr := rs.cfg.Checkpoint.ShouldRun(currentJob.Dir)
+	if checkErr != nil {
+		return false, fmt.Errorf("checkpoint check: %w", checkErr)
+	}
+
+	if !shouldRun {
+		rs.mutex.Lock()
+		rs.summary.Skipped++
+		rs.mutex.Unlock()
+
+		rs.cfg.Output.IncProgress()
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (rs *runState) processJob(execCtx context.Context, interruptCtx context.Context, currentJob *job.Job) {
+	result := execute(execCtx, interruptCtx, rs.cfg, currentJob)
 
 	rs.mutex.Lock()
 	if result.Status == job.StatusSuccess {
@@ -47,13 +74,17 @@ func (rs *runState) processJob(ctx context.Context, currentJob *job.Job) {
 	} else {
 		rs.summary.Failed++
 		rs.summary.FailedJobs = append(rs.summary.FailedJobs, currentJob)
+
+		if rs.cfg.FailFast {
+			rs.launchStop()
+		}
 	}
 	rs.mutex.Unlock()
 
 	rs.cfg.Output.IncProgress()
 
 	if rs.cfg.Checkpoint != nil {
-		recordErr := rs.cfg.Checkpoint.Record(currentJob, result)
+		recordErr := rs.cfg.Checkpoint.Record(currentJob.Dir, result)
 		if recordErr != nil {
 			rs.mutex.Lock()
 			rs.runErr = errors.Join(rs.runErr, fmt.Errorf("checkpoint record: %w", recordErr))
@@ -63,10 +94,23 @@ func (rs *runState) processJob(ctx context.Context, currentJob *job.Job) {
 }
 
 // Run executes all jobs in parallel according to the given configuration.
-func Run(ctx context.Context, cfg Config, jobs []*job.Job) (*Summary, error) {
+// execCtx controls force-killing running jobs (cancelled by 3rd Ctrl+C or timeout).
+// interruptCtx controls graceful interruption (cancelled by 2nd Ctrl+C, sends SIGINT).
+// launchCtx controls new job launches (cancelled by 1st Ctrl+C or fail-fast).
+func Run(
+	execCtx context.Context,
+	interruptCtx context.Context,
+	launchCtx context.Context,
+	cfg Config,
+	jobs []*job.Job,
+) (*Summary, error) {
+	innerLaunchCtx, innerLaunchStop := context.WithCancel(launchCtx)
+	defer innerLaunchStop()
+
 	state := &runState{
-		cfg:     cfg,
-		summary: &Summary{Total: len(jobs)},
+		cfg:        cfg,
+		summary:    &Summary{Total: len(jobs)},
+		launchStop: innerLaunchStop,
 	}
 
 	sem := make(chan struct{}, cfg.Jobs)
@@ -74,30 +118,22 @@ func Run(ctx context.Context, cfg Config, jobs []*job.Job) (*Summary, error) {
 	var waitGroup sync.WaitGroup
 
 	for _, currentJob := range jobs {
-		if ctx.Err() != nil {
+		if innerLaunchCtx.Err() != nil {
 			break
 		}
 
-		if cfg.Checkpoint != nil {
-			shouldRun, checkErr := cfg.Checkpoint.ShouldRun(currentJob)
-			if checkErr != nil {
-				return state.summary, fmt.Errorf("checkpoint check: %w", checkErr)
-			}
+		skipped, checkErr := state.skipIfCheckpointed(currentJob)
+		if checkErr != nil {
+			return state.summary, checkErr
+		}
 
-			if !shouldRun {
-				state.mutex.Lock()
-				state.summary.Skipped++
-				state.mutex.Unlock()
-
-				state.cfg.Output.IncProgress()
-
-				continue
-			}
+		if skipped {
+			continue
 		}
 
 		sem <- struct{}{}
 
-		if ctx.Err() != nil {
+		if innerLaunchCtx.Err() != nil {
 			<-sem
 
 			break
@@ -109,7 +145,7 @@ func Run(ctx context.Context, cfg Config, jobs []*job.Job) (*Summary, error) {
 			defer waitGroup.Done()
 			defer func() { <-sem }()
 
-			state.processJob(ctx, currentJob)
+			state.processJob(execCtx, interruptCtx, currentJob)
 		}(currentJob)
 	}
 
@@ -118,9 +154,21 @@ func Run(ctx context.Context, cfg Config, jobs []*job.Job) (*Summary, error) {
 	return state.summary, state.runErr
 }
 
-func execute(ctx context.Context, cfg Config, currentJob *job.Job) job.Result {
+func execute(
+	execCtx context.Context,
+	interruptCtx context.Context,
+	cfg Config,
+	currentJob *job.Job,
+) job.Result {
+	if cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+
+		execCtx, cancel = context.WithTimeout(execCtx, cfg.Timeout)
+		defer cancel()
+	}
+
 	//nolint:gosec // pll executes user-provided shell commands by design
-	cmd := exec.CommandContext(ctx, "sh", "-c", currentJob.Command)
+	cmd := exec.CommandContext(execCtx, "sh", "-c", currentJob.Command)
 
 	writers := cfg.Output.NewWriters()
 	cmd.Stdout = writers.Stdout
@@ -141,7 +189,29 @@ func execute(ctx context.Context, cfg Config, currentJob *job.Job) job.Result {
 		}
 	}
 
-	runErr := cmd.Run()
+	startErr := cmd.Start()
+	if startErr != nil {
+		return job.Result{Status: job.StatusFailure, ExitCode: 1}
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		select {
+		case <-interruptCtx.Done():
+			_ = cmd.Process.Signal(os.Interrupt)
+		case <-done:
+		}
+	}()
+
+	runErr := cmd.Wait()
+
+	close(done)
+
+	return buildResult(runErr)
+}
+
+func buildResult(runErr error) job.Result {
 	if runErr != nil {
 		exitCode := 1
 

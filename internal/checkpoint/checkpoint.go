@@ -2,8 +2,6 @@
 package checkpoint
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,14 +38,14 @@ func Open(path string) (*Store, error) {
 	return &Store{database: database}, nil
 }
 
-// ShouldRun checks whether a job needs to be executed based on checkpoint data.
-// Returns true if the job has not been recorded or previously failed.
-func (s *Store) ShouldRun(currentJob *job.Job) (bool, error) {
+// ShouldRun checks whether a directory needs to be executed based on checkpoint data.
+// Returns true if the directory has not been recorded or previously failed.
+func (s *Store) ShouldRun(dir string) (bool, error) {
 	var shouldRun bool
 
 	viewErr := s.database.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(bucketName)
-		value := bucket.Get(s.key(currentJob))
+		value := bucket.Get([]byte(dir))
 
 		if value == nil {
 			shouldRun = true
@@ -71,7 +69,7 @@ func (s *Store) ShouldRun(currentJob *job.Job) (bool, error) {
 }
 
 // Record saves the result of a job execution to the checkpoint database.
-func (s *Store) Record(currentJob *job.Job, result job.Result) error {
+func (s *Store) Record(dir string, result job.Result) error {
 	return s.database.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(bucketName)
 
@@ -80,18 +78,11 @@ func (s *Store) Record(currentJob *job.Job, result job.Result) error {
 			return marshalErr
 		}
 
-		return bucket.Put(s.key(currentJob), value)
+		return bucket.Put([]byte(dir), value)
 	})
 }
 
 // Close closes the underlying BoltDB database.
 func (s *Store) Close() error {
 	return s.database.Close()
-}
-
-func (s *Store) key(currentJob *job.Job) []byte {
-	hash := sha256.Sum256([]byte(currentJob.Dir + "\x00" + currentJob.Command))
-	encoded := hex.EncodeToString(hash[:])
-
-	return []byte(encoded)
 }

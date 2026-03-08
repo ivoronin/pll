@@ -28,10 +28,12 @@ pll reads lines from stdin, replaces `{}` placeholders in a command template wit
 - Configurable parallelism, defaults to number of CPU cores
 - `{}` placeholder expansion in both command and working directory templates
 - Three output buffering modes: none (passthrough), line (atomic lines), job (buffer entire output)
-- BoltDB checkpoint persistence for resumable execution, content-addressed by SHA256 of command and directory
+- BoltDB checkpoint persistence for resumable execution, keyed by working directory
 - Interactive mode (`-i`) with stdin passthrough for sequential execution
 - Terminal progress bar for tracking job completion (`-p`)
-- Graceful interruption via Ctrl+C with in-progress job completion
+- Per-job timeout (`-t`) to kill jobs that exceed a time limit
+- Fail-fast mode (`--fail-fast`) to stop launching new jobs after the first failure
+- Three-stage Ctrl+C: stop launching, then interrupt running jobs, then force kill
 
 ## Installation
 
@@ -103,7 +105,31 @@ pll -c deploy.db 'ansible-playbook -l {} site.yml' < hosts.txt
 pll -c deploy.db 'ansible-playbook -l {} site.yml' < hosts.txt
 ```
 
-Each job is identified by a SHA256 hash of its command and working directory. Results are stored in a BoltDB file. On re-run, only previously successful jobs are skipped; failed jobs are always retried.
+Each job is identified by its working directory. Results are stored in a BoltDB file. On re-run, only previously successful jobs are skipped; failed jobs are always retried.
+
+### Timeout
+
+```bash
+# Kill any job that runs longer than 30 seconds
+pll -t 30s 'curl -sS https://{}/.well-known/health' < domains.txt
+
+# 5-minute timeout with checkpoint to retry timed-out jobs on re-run
+pll -t 5m -c deploy.db 'ansible-playbook -l {} site.yml' < hosts.txt
+```
+
+Timed-out jobs are recorded as failures. Mutually exclusive with `-i`.
+
+### Fail-Fast
+
+```bash
+# Stop launching new jobs after the first failure
+pll --fail-fast 'make -C {}' < projects.txt
+
+# Combine with timeout - first timeout triggers fail-fast
+pll -t 30s --fail-fast -j4 'ssh {} "apt update"' < hosts.txt
+```
+
+Already-running jobs finish naturally. With checkpoints, unlaunched jobs have no entry and will run on re-run.
 
 ### Working Directory
 
@@ -115,9 +141,11 @@ pll -C '/srv/{}' 'git pull' < repos.txt
 ### Flags
 
 ```
--i, --interactive  run jobs sequentially with stdin connected (mutually exclusive with -j)
+-i, --interactive  run jobs sequentially with stdin connected (mutually exclusive with -j, -t)
 -j, --jobs         number of parallel jobs (default: number of CPU cores)
 -p, --progress     show progress bar on stderr
+-t, --timeout      per-job timeout (e.g. 30s, 5m)
+    --fail-fast    stop launching new jobs after first failure
 -b, --buffer       output buffering mode: none, line, job (default: line)
 -c, --checkpoint   path to checkpoint file for resumable execution
 -C, --chdir        change to directory before running command (supports {})

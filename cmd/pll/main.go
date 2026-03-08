@@ -22,9 +22,11 @@ import (
 var (
 	version = "dev"
 
-	errConflictingJobsFlag     = errors.New("--interactive and --jobs are mutually exclusive")
-	errConflictingBufferFlag   = errors.New("--interactive and --buffer are mutually exclusive")
-	errConflictingProgressFlag = errors.New("--interactive and --progress are mutually exclusive")
+	errConflictingJobsFlag           = errors.New("--interactive and --jobs are mutually exclusive")
+	errConflictingBufferFlag         = errors.New("--interactive and --buffer are mutually exclusive")
+	errConflictingProgressFlag       = errors.New("--interactive and --progress are mutually exclusive")
+	errConflictingTimeoutFlag        = errors.New("--interactive and --timeout are mutually exclusive")
+	errConflictingProgressBufferFlag = errors.New("--progress and --buffer none are mutually exclusive")
 )
 
 func main() {
@@ -38,6 +40,8 @@ func run() int {
 	checkpointPath := flag.StringP("checkpoint", "c", "", "path to checkpoint file")
 	bufferMode := flag.StringP("buffer", "b", "line", "output buffering mode: none, line, job")
 	progress := flag.BoolP("progress", "p", false, "show progress bar on stderr")
+	timeout := flag.DurationP("timeout", "t", 0, "per-job timeout (e.g. 30s, 5m)")
+	failFast := flag.Bool("fail-fast", false, "stop launching new jobs after first failure")
 	chdir := flag.StringP("chdir", "C", "", "change to directory before running command (supports {} placeholder)")
 
 	flag.Usage = func() {
@@ -56,13 +60,23 @@ func run() int {
 		return 0
 	}
 
-	return runJobs(*interactive, jobs, bufferMode, chdir, *checkpointPath, *progress)
+	return runJobs(*interactive, *progress, jobs, bufferMode, chdir,
+		*checkpointPath, *timeout, *failFast)
 }
 
-func runJobs(interactive bool, jobs *int, bufferMode *string, chdir *string, checkpointPath string, progress bool) int {
-	interactiveErr := resolveInteractive(interactive, jobs, bufferMode)
-	if interactiveErr != nil {
-		fmt.Fprintf(os.Stderr, "pll: %v\n", interactiveErr)
+func runJobs(
+	interactive bool,
+	progress bool,
+	jobs *int,
+	bufferMode *string,
+	chdir *string,
+	checkpointPath string,
+	timeout time.Duration,
+	failFast bool,
+) int {
+	flagErr := validateFlags(interactive, progress, jobs, bufferMode)
+	if flagErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", flagErr)
 
 		return 2
 	}
@@ -93,7 +107,8 @@ func runJobs(interactive bool, jobs *int, bufferMode *string, chdir *string, che
 
 	startTime := time.Now()
 
-	summary, runErr := executeJobs(allJobs, *jobs, interactive, *bufferMode, checkpointPath, progress)
+	summary, runErr := executeJobs(allJobs, *jobs, interactive, *bufferMode,
+		checkpointPath, progress, timeout, failFast)
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
@@ -114,11 +129,22 @@ func runJobs(interactive bool, jobs *int, bufferMode *string, chdir *string, che
 	return 0
 }
 
-func resolveInteractive(interactive bool, jobs *int, bufferMode *string) error {
-	if !interactive {
-		return nil
+func validateFlags(interactive bool, progress bool, jobs *int, bufferMode *string) error {
+	if interactive {
+		err := resolveInteractive(jobs, bufferMode)
+		if err != nil {
+			return err
+		}
 	}
 
+	if progress && *bufferMode == string(output.ModeNone) {
+		return errConflictingProgressBufferFlag
+	}
+
+	return nil
+}
+
+func resolveInteractive(jobs *int, bufferMode *string) error {
 	if flag.Lookup("jobs").Changed {
 		return errConflictingJobsFlag
 	}
@@ -129,6 +155,10 @@ func resolveInteractive(interactive bool, jobs *int, bufferMode *string) error {
 
 	if flag.Lookup("progress").Changed {
 		return errConflictingProgressFlag
+	}
+
+	if flag.Lookup("timeout").Changed {
+		return errConflictingTimeoutFlag
 	}
 
 	*jobs = 1
@@ -178,6 +208,8 @@ func executeJobs(
 	bufferMode string,
 	checkpointPath string,
 	progress bool,
+	timeout time.Duration,
+	failFast bool,
 ) (*runner.Summary, error) {
 	mode := output.Mode(bufferMode)
 	factory := output.NewFactory(mode)
@@ -191,6 +223,8 @@ func executeJobs(
 		Jobs:        jobCount,
 		Interactive: interactive,
 		Output:      factory,
+		Timeout:     timeout,
+		FailFast:    failFast,
 	}
 
 	if checkpointPath != "" {
@@ -206,8 +240,58 @@ func executeJobs(
 		cfg.Checkpoint = store
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	if interactive {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
 
-	return runner.Run(ctx, cfg, allJobs)
+		return runner.Run(ctx, ctx, ctx, cfg, allJobs)
+	}
+
+	return executeParallel(cfg, allJobs)
+}
+
+func executeParallel(cfg runner.Config, allJobs []*job.Job) (*runner.Summary, error) {
+	sigCh := make(chan os.Signal, 3)
+
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+
+	execCtx, execCancel := context.WithCancel(context.Background())
+	defer execCancel()
+
+	interruptCtx, interruptCancel := context.WithCancel(context.Background())
+	defer interruptCancel()
+
+	launchCtx, launchCancel := context.WithCancel(execCtx)
+	defer launchCancel()
+
+	go func() {
+		select {
+		case <-sigCh:
+			fmt.Fprintln(os.Stderr,
+				"\npll: waiting for running jobs to finish (press Ctrl+C to interrupt)")
+			launchCancel()
+		case <-execCtx.Done():
+			return
+		}
+
+		select {
+		case <-sigCh:
+			fmt.Fprintln(os.Stderr,
+				"pll: interrupting running jobs (press Ctrl+C to force)")
+			interruptCancel()
+		case <-execCtx.Done():
+			return
+		}
+
+		select {
+		case <-sigCh:
+			fmt.Fprintln(os.Stderr, "pll: forcing termination")
+			execCancel()
+		case <-execCtx.Done():
+			return
+		}
+	}()
+
+	return runner.Run(execCtx, interruptCtx, launchCtx, cfg, allJobs)
 }
