@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	charm.land/lipgloss/v2 v2.0.2
-	github.com/charmbracelet/colorprofile v0.4.2
+	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/spf13/pflag v1.0.10
 	go.etcd.io/bbolt v1.4.3
