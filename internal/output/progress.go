@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
-	lipgloss "github.com/charmbracelet/lipgloss/v2"
 	"github.com/charmbracelet/x/term"
 )
 
