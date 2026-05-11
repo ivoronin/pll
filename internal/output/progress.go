@@ -144,9 +144,13 @@ func (progress *Progress) draw() {
 
 	suffix := fmt.Sprintf(" %d / %d", progress.done, progress.total)
 
-	if progress.failed > 0 || progress.skipped > 0 {
+	if progress.done > 0 {
 		succeeded := progress.done - progress.failed - progress.skipped
-		parts := []string{fmt.Sprintf("%d done", succeeded)}
+
+		var parts []string
+		if succeeded > 0 {
+			parts = append(parts, fmt.Sprintf("%d done", succeeded))
+		}
 
 		if progress.failed > 0 {
 			parts = append(parts, fmt.Sprintf("%d failed", progress.failed))
