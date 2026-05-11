@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/ivoronin/pll/internal/job"
 )
 
 // Mode specifies the output buffering strategy.
@@ -45,24 +47,21 @@ func (f *Factory) EnableProgress(total int) {
 	f.progress = newProgress(&f.mu, total)
 }
 
-// IncProgress increments the progress bar by one successfully completed job.
-func (f *Factory) IncProgress() {
-	if f.progress != nil {
-		f.progress.Inc()
+// IncProgress increments the progress bar by one completed job, bucketed by status.
+func (f *Factory) IncProgress(status job.Status) {
+	if f.progress == nil {
+		return
 	}
-}
 
-// IncFailedProgress increments the progress bar by one failed job.
-func (f *Factory) IncFailedProgress() {
-	if f.progress != nil {
-		f.progress.IncFailed()
-	}
-}
-
-// IncTimedOutProgress increments the progress bar by one timed-out job.
-func (f *Factory) IncTimedOutProgress() {
-	if f.progress != nil {
-		f.progress.IncTimedOut()
+	switch status {
+	case job.StatusSuccess:
+		f.progress.Inc(0, 0, 0)
+	case job.StatusTimeout:
+		f.progress.Inc(0, 1, 0)
+	case job.StatusFailure:
+		fallthrough
+	default:
+		f.progress.Inc(1, 0, 0)
 	}
 }
 

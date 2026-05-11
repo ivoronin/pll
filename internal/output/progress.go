@@ -39,24 +39,9 @@ type Progress struct {
 	stopTicker   chan struct{}
 }
 
-// Inc increments the completion counter for a successful job and redraws the bar.
-func (progress *Progress) Inc() {
-	progress.inc(0, 0, 0)
-}
-
-// IncFailed increments the completion counter and the failed counter, then redraws the bar.
-func (progress *Progress) IncFailed() {
-	progress.inc(1, 0, 0)
-}
-
-// IncTimedOut increments the completion counter and the timed-out counter, then redraws the bar.
-func (progress *Progress) IncTimedOut() {
-	progress.inc(0, 1, 0)
-}
-
 // IncSkipped increments the completion counter and the skipped counter, then redraws the bar.
 func (progress *Progress) IncSkipped() {
-	progress.inc(0, 0, 1)
+	progress.Inc(0, 0, 1)
 }
 
 // Done clears the bar and disables further drawing.
@@ -71,6 +56,23 @@ func (progress *Progress) Done() {
 
 	progress.clear()
 	progress.enabled = false
+}
+
+// Inc bumps the done counter and the per-bucket deltas, then redraws the bar.
+func (progress *Progress) Inc(failedDelta, timedOutDelta, skippedDelta int) {
+	progress.mutex.Lock()
+	defer progress.mutex.Unlock()
+
+	if !progress.enabled {
+		return
+	}
+
+	progress.done++
+	progress.failed += failedDelta
+	progress.timedOut += timedOutDelta
+	progress.skipped += skippedDelta
+	progress.clear()
+	progress.draw()
 }
 
 func (progress *Progress) formatSuffix() string {
@@ -100,22 +102,6 @@ func (progress *Progress) formatSuffix() string {
 	}
 
 	return suffix + " (" + strings.Join(parts, ", ") + ")"
-}
-
-func (progress *Progress) inc(failedDelta, timedOutDelta, skippedDelta int) {
-	progress.mutex.Lock()
-	defer progress.mutex.Unlock()
-
-	if !progress.enabled {
-		return
-	}
-
-	progress.done++
-	progress.failed += failedDelta
-	progress.timedOut += timedOutDelta
-	progress.skipped += skippedDelta
-	progress.clear()
-	progress.draw()
 }
 
 func newProgress(mutex *sync.Mutex, total int) *Progress {

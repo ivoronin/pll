@@ -90,24 +90,11 @@ func (rs *runState) recordOutcome(currentJob *job.Job, status job.Status) {
 	}
 }
 
-func (rs *runState) notifyProgress(status job.Status) {
-	switch status {
-	case job.StatusSuccess:
-		rs.cfg.Output.IncProgress()
-	case job.StatusTimeout:
-		rs.cfg.Output.IncTimedOutProgress()
-	case job.StatusFailure:
-		fallthrough
-	default:
-		rs.cfg.Output.IncFailedProgress()
-	}
-}
-
 func (rs *runState) processJob(execCtx context.Context, interruptCtx context.Context, currentJob *job.Job) {
 	result := execute(execCtx, interruptCtx, rs.cfg, currentJob)
 
 	rs.recordOutcome(currentJob, result.Status)
-	rs.notifyProgress(result.Status)
+	rs.cfg.Output.IncProgress(result.Status)
 
 	if rs.cfg.Checkpoint != nil {
 		recordErr := rs.cfg.Checkpoint.Record(currentJob.Dir, result)

@@ -91,20 +91,7 @@ func runDumpCheckpoint(path string) int {
 	_, _ = fmt.Fprintln(writer, "STATUS\tEXIT\tDIR")
 
 	forEachErr := store.ForEach(func(dir string, result job.Result) error {
-		var status string
-
-		switch result.Status {
-		case job.StatusSuccess:
-			status = "success"
-		case job.StatusTimeout:
-			status = "timeout"
-		case job.StatusFailure:
-			fallthrough
-		default:
-			status = "failure"
-		}
-
-		_, writeErr := fmt.Fprintf(writer, "%s\t%d\t%s\n", status, result.ExitCode, dir)
+		_, writeErr := fmt.Fprintf(writer, "%s\t%d\t%s\n", result.Status, result.ExitCode, dir)
 
 		return writeErr
 	})
