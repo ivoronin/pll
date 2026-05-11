@@ -26,6 +26,8 @@ type Progress struct {
 	mutex        *sync.Mutex
 	total        int
 	done         int
+	failed       int
+	skipped      int
 	enabled      bool
 	writer       *colorprofile.Writer
 	filled       lipgloss.Style
@@ -36,18 +38,19 @@ type Progress struct {
 	stopTicker   chan struct{}
 }
 
-// Inc increments the completion counter and redraws the bar.
+// Inc increments the completion counter for a successful job and redraws the bar.
 func (progress *Progress) Inc() {
-	progress.mutex.Lock()
-	defer progress.mutex.Unlock()
+	progress.inc(0, 0)
+}
 
-	if !progress.enabled {
-		return
-	}
+// IncFailed increments the completion counter and the failed counter, then redraws the bar.
+func (progress *Progress) IncFailed() {
+	progress.inc(1, 0)
+}
 
-	progress.done++
-	progress.clear()
-	progress.draw()
+// IncSkipped increments the completion counter and the skipped counter, then redraws the bar.
+func (progress *Progress) IncSkipped() {
+	progress.inc(0, 1)
 }
 
 // Done clears the bar and disables further drawing.
@@ -62,6 +65,21 @@ func (progress *Progress) Done() {
 
 	progress.clear()
 	progress.enabled = false
+}
+
+func (progress *Progress) inc(failedDelta, skippedDelta int) {
+	progress.mutex.Lock()
+	defer progress.mutex.Unlock()
+
+	if !progress.enabled {
+		return
+	}
+
+	progress.done++
+	progress.failed += failedDelta
+	progress.skipped += skippedDelta
+	progress.clear()
+	progress.draw()
 }
 
 func newProgress(mutex *sync.Mutex, total int) *Progress {
@@ -124,7 +142,22 @@ func (progress *Progress) draw() {
 		width = termWidth
 	}
 
-	suffix := fmt.Sprintf(" %d/%d", progress.done, progress.total)
+	suffix := fmt.Sprintf(" %d / %d", progress.done, progress.total)
+
+	if progress.failed > 0 || progress.skipped > 0 {
+		succeeded := progress.done - progress.failed - progress.skipped
+		parts := []string{fmt.Sprintf("%d done", succeeded)}
+
+		if progress.failed > 0 {
+			parts = append(parts, fmt.Sprintf("%d failed", progress.failed))
+		}
+
+		if progress.skipped > 0 {
+			parts = append(parts, fmt.Sprintf("%d skipped", progress.skipped))
+		}
+
+		suffix += " (" + strings.Join(parts, ", ") + ")"
+	}
 
 	if len(suffix) > progress.maxSuffixLen {
 		progress.maxSuffixLen = len(suffix)

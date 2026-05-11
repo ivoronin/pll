@@ -57,7 +57,7 @@ func (rs *runState) skipIfCheckpointed(currentJob *job.Job) (bool, error) {
 		rs.summary.Skipped++
 		rs.mutex.Unlock()
 
-		rs.cfg.Output.IncProgress()
+		rs.cfg.Output.IncSkippedProgress()
 
 		return true, nil
 	}
@@ -81,7 +81,11 @@ func (rs *runState) processJob(execCtx context.Context, interruptCtx context.Con
 	}
 	rs.mutex.Unlock()
 
-	rs.cfg.Output.IncProgress()
+	if result.Status == job.StatusSuccess {
+		rs.cfg.Output.IncProgress()
+	} else {
+		rs.cfg.Output.IncFailedProgress()
+	}
 
 	if rs.cfg.Checkpoint != nil {
 		recordErr := rs.cfg.Checkpoint.Record(currentJob.Dir, result)

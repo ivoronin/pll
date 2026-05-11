@@ -45,10 +45,24 @@ func (f *Factory) EnableProgress(total int) {
 	f.progress = newProgress(&f.mu, total)
 }
 
-// IncProgress increments the progress bar by one completed job.
+// IncProgress increments the progress bar by one successfully completed job.
 func (f *Factory) IncProgress() {
 	if f.progress != nil {
 		f.progress.Inc()
+	}
+}
+
+// IncFailedProgress increments the progress bar by one failed job.
+func (f *Factory) IncFailedProgress() {
+	if f.progress != nil {
+		f.progress.IncFailed()
+	}
+}
+
+// IncSkippedProgress increments the progress bar by one skipped job.
+func (f *Factory) IncSkippedProgress() {
+	if f.progress != nil {
+		f.progress.IncSkipped()
 	}
 }
 
