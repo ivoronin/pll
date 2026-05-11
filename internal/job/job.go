@@ -9,6 +9,8 @@ const (
 	StatusSuccess Status = iota
 	// StatusFailure indicates a job failed during execution.
 	StatusFailure
+	// StatusTimeout indicates a job was killed because it exceeded the per-job timeout.
+	StatusTimeout
 )
 
 // Result holds the outcome and exit code of a completed job.

@@ -59,6 +59,13 @@ func (f *Factory) IncFailedProgress() {
 	}
 }
 
+// IncTimedOutProgress increments the progress bar by one timed-out job.
+func (f *Factory) IncTimedOutProgress() {
+	if f.progress != nil {
+		f.progress.IncTimedOut()
+	}
+}
+
 // IncSkippedProgress increments the progress bar by one skipped job.
 func (f *Factory) IncSkippedProgress() {
 	if f.progress != nil {

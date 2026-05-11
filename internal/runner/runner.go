@@ -30,6 +30,7 @@ type Summary struct {
 	Total      int
 	Succeeded  int
 	Failed     int
+	TimedOut   int
 	Skipped    int
 	FailedJobs []*job.Job
 }
@@ -65,27 +66,48 @@ func (rs *runState) skipIfCheckpointed(currentJob *job.Job) (bool, error) {
 	return false, nil
 }
 
+func (rs *runState) recordOutcome(currentJob *job.Job, status job.Status) {
+	rs.mutex.Lock()
+	defer rs.mutex.Unlock()
+
+	switch status {
+	case job.StatusSuccess:
+		rs.summary.Succeeded++
+
+		return
+	case job.StatusTimeout:
+		rs.summary.TimedOut++
+	case job.StatusFailure:
+		fallthrough
+	default:
+		rs.summary.Failed++
+	}
+
+	rs.summary.FailedJobs = append(rs.summary.FailedJobs, currentJob)
+
+	if rs.cfg.FailFast {
+		rs.launchStop()
+	}
+}
+
+func (rs *runState) notifyProgress(status job.Status) {
+	switch status {
+	case job.StatusSuccess:
+		rs.cfg.Output.IncProgress()
+	case job.StatusTimeout:
+		rs.cfg.Output.IncTimedOutProgress()
+	case job.StatusFailure:
+		fallthrough
+	default:
+		rs.cfg.Output.IncFailedProgress()
+	}
+}
+
 func (rs *runState) processJob(execCtx context.Context, interruptCtx context.Context, currentJob *job.Job) {
 	result := execute(execCtx, interruptCtx, rs.cfg, currentJob)
 
-	rs.mutex.Lock()
-	if result.Status == job.StatusSuccess {
-		rs.summary.Succeeded++
-	} else {
-		rs.summary.Failed++
-		rs.summary.FailedJobs = append(rs.summary.FailedJobs, currentJob)
-
-		if rs.cfg.FailFast {
-			rs.launchStop()
-		}
-	}
-	rs.mutex.Unlock()
-
-	if result.Status == job.StatusSuccess {
-		rs.cfg.Output.IncProgress()
-	} else {
-		rs.cfg.Output.IncFailedProgress()
-	}
+	rs.recordOutcome(currentJob, result.Status)
+	rs.notifyProgress(result.Status)
 
 	if rs.cfg.Checkpoint != nil {
 		recordErr := rs.cfg.Checkpoint.Record(currentJob.Dir, result)
@@ -212,16 +234,20 @@ func execute(
 
 	close(done)
 
-	return buildResult(runErr)
+	return buildResult(runErr, execCtx.Err())
 }
 
-func buildResult(runErr error) job.Result {
+func buildResult(runErr error, ctxErr error) job.Result {
 	if runErr != nil {
 		exitCode := 1
 
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
+		}
+
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			return job.Result{Status: job.StatusTimeout, ExitCode: exitCode}
 		}
 
 		return job.Result{Status: job.StatusFailure, ExitCode: exitCode}

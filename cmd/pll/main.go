@@ -91,9 +91,17 @@ func runDumpCheckpoint(path string) int {
 	_, _ = fmt.Fprintln(writer, "STATUS\tEXIT\tDIR")
 
 	forEachErr := store.ForEach(func(dir string, result job.Result) error {
-		status := "failure"
-		if result.Status == job.StatusSuccess {
+		var status string
+
+		switch result.Status {
+		case job.StatusSuccess:
 			status = "success"
+		case job.StatusTimeout:
+			status = "timeout"
+		case job.StatusFailure:
+			fallthrough
+		default:
+			status = "failure"
 		}
 
 		_, writeErr := fmt.Fprintf(writer, "%s\t%d\t%s\n", status, result.ExitCode, dir)
@@ -175,10 +183,11 @@ func reportResults(summary *runner.Summary, runErr error, elapsed time.Duration)
 		fmt.Fprintf(os.Stderr, "pll: job failed: '%s' in '%s'\n", j.Command, j.Dir)
 	}
 
-	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d skipped (total: %d) in %s\n",
-		summary.Succeeded, summary.Failed, summary.Skipped, summary.Total, elapsed.Round(time.Second))
+	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d timed out, %d skipped (total: %d) in %s\n",
+		summary.Succeeded, summary.Failed, summary.TimedOut, summary.Skipped,
+		summary.Total, elapsed.Round(time.Second))
 
-	if summary.Failed > 0 || runErr != nil {
+	if summary.Failed > 0 || summary.TimedOut > 0 || runErr != nil {
 		return 1
 	}
 

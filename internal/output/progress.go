@@ -27,6 +27,7 @@ type Progress struct {
 	total        int
 	done         int
 	failed       int
+	timedOut     int
 	skipped      int
 	enabled      bool
 	writer       *colorprofile.Writer
@@ -40,17 +41,22 @@ type Progress struct {
 
 // Inc increments the completion counter for a successful job and redraws the bar.
 func (progress *Progress) Inc() {
-	progress.inc(0, 0)
+	progress.inc(0, 0, 0)
 }
 
 // IncFailed increments the completion counter and the failed counter, then redraws the bar.
 func (progress *Progress) IncFailed() {
-	progress.inc(1, 0)
+	progress.inc(1, 0, 0)
+}
+
+// IncTimedOut increments the completion counter and the timed-out counter, then redraws the bar.
+func (progress *Progress) IncTimedOut() {
+	progress.inc(0, 1, 0)
 }
 
 // IncSkipped increments the completion counter and the skipped counter, then redraws the bar.
 func (progress *Progress) IncSkipped() {
-	progress.inc(0, 1)
+	progress.inc(0, 0, 1)
 }
 
 // Done clears the bar and disables further drawing.
@@ -67,7 +73,36 @@ func (progress *Progress) Done() {
 	progress.enabled = false
 }
 
-func (progress *Progress) inc(failedDelta, skippedDelta int) {
+func (progress *Progress) formatSuffix() string {
+	suffix := fmt.Sprintf(" %d / %d", progress.done, progress.total)
+
+	if progress.done == 0 {
+		return suffix
+	}
+
+	succeeded := progress.done - progress.failed - progress.timedOut - progress.skipped
+
+	var parts []string
+	if succeeded > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", succeeded))
+	}
+
+	if progress.failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", progress.failed))
+	}
+
+	if progress.timedOut > 0 {
+		parts = append(parts, fmt.Sprintf("%d timed out", progress.timedOut))
+	}
+
+	if progress.skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", progress.skipped))
+	}
+
+	return suffix + " (" + strings.Join(parts, ", ") + ")"
+}
+
+func (progress *Progress) inc(failedDelta, timedOutDelta, skippedDelta int) {
 	progress.mutex.Lock()
 	defer progress.mutex.Unlock()
 
@@ -77,6 +112,7 @@ func (progress *Progress) inc(failedDelta, skippedDelta int) {
 
 	progress.done++
 	progress.failed += failedDelta
+	progress.timedOut += timedOutDelta
 	progress.skipped += skippedDelta
 	progress.clear()
 	progress.draw()
@@ -142,26 +178,7 @@ func (progress *Progress) draw() {
 		width = termWidth
 	}
 
-	suffix := fmt.Sprintf(" %d / %d", progress.done, progress.total)
-
-	if progress.done > 0 {
-		succeeded := progress.done - progress.failed - progress.skipped
-
-		var parts []string
-		if succeeded > 0 {
-			parts = append(parts, fmt.Sprintf("%d done", succeeded))
-		}
-
-		if progress.failed > 0 {
-			parts = append(parts, fmt.Sprintf("%d failed", progress.failed))
-		}
-
-		if progress.skipped > 0 {
-			parts = append(parts, fmt.Sprintf("%d skipped", progress.skipped))
-		}
-
-		suffix += " (" + strings.Join(parts, ", ") + ")"
-	}
+	suffix := progress.formatSuffix()
 
 	if len(suffix) > progress.maxSuffixLen {
 		progress.maxSuffixLen = len(suffix)
