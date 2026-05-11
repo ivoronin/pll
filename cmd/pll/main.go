@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"text/tabwriter"
 	"time"
 
 	"github.com/ivoronin/pll/internal/checkpoint"
@@ -42,6 +43,7 @@ func run() int {
 	progress := flag.BoolP("progress", "p", false, "show progress bar on stderr")
 	timeout := flag.DurationP("timeout", "t", 0, "per-job timeout (e.g. 30s, 5m)")
 	failFast := flag.Bool("fail-fast", false, "stop launching new jobs after first failure")
+	dumpCheckpoint := flag.BoolP("dump-checkpoint", "d", false, "dump checkpoint contents to stdout and exit")
 	chdir := flag.StringP("chdir", "C", "", "change to directory before running command (supports {} placeholder)")
 
 	flag.Usage = func() {
@@ -60,8 +62,58 @@ func run() int {
 		return 0
 	}
 
+	if *dumpCheckpoint {
+		return runDumpCheckpoint(*checkpointPath)
+	}
+
 	return runJobs(*interactive, *progress, jobs, bufferMode, chdir,
 		*checkpointPath, *timeout, *failFast)
+}
+
+func runDumpCheckpoint(path string) int {
+	if path == "" {
+		fmt.Fprintln(os.Stderr, "pll: --dump-checkpoint requires --checkpoint/-c")
+
+		return 2
+	}
+
+	store, openErr := checkpoint.OpenReadOnly(path)
+	if openErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", openErr)
+
+		return 1
+	}
+
+	defer func() { _ = store.Close() }()
+
+	writer := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+
+	_, _ = fmt.Fprintln(writer, "STATUS\tEXIT\tDIR")
+
+	forEachErr := store.ForEach(func(dir string, result job.Result) error {
+		status := "failure"
+		if result.Status == job.StatusSuccess {
+			status = "success"
+		}
+
+		_, writeErr := fmt.Fprintf(writer, "%s\t%d\t%s\n", status, result.ExitCode, dir)
+
+		return writeErr
+	})
+	if forEachErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", forEachErr)
+
+		return 1
+	}
+
+	flushErr := writer.Flush()
+	if flushErr != nil {
+		fmt.Fprintf(os.Stderr, "pll: %v\n", flushErr)
+
+		return 1
+	}
+
+	return 0
 }
 
 func runJobs(
