@@ -20,26 +20,16 @@ type Config struct {
 	Jobs        int
 	Checkpoint  *checkpoint.Store
 	Interactive bool
-	Output      *output.Factory
+	Output      *output.Output
 	Timeout     time.Duration
 	FailFast    bool
 }
 
-// Summary tracks the outcome counts of a completed run.
-type Summary struct {
-	Total      int
-	Succeeded  int
-	Failed     int
-	TimedOut   int
-	Skipped    int
-	FailedJobs []*job.Job
-}
-
 type runState struct {
 	cfg        Config
-	summary    *Summary
-	mutex      sync.Mutex
+	stats      *job.Stats
 	runErr     error
+	runErrMu   sync.Mutex
 	launchStop context.CancelFunc
 }
 
@@ -54,11 +44,8 @@ func (rs *runState) skipIfCheckpointed(currentJob *job.Job) (bool, error) {
 	}
 
 	if !shouldRun {
-		rs.mutex.Lock()
-		rs.summary.Skipped++
-		rs.mutex.Unlock()
-
-		rs.cfg.Output.IncSkippedProgress()
+		rs.stats.RecordSkipped()
+		rs.cfg.Output.RefreshProgress()
 
 		return true, nil
 	}
@@ -67,26 +54,23 @@ func (rs *runState) skipIfCheckpointed(currentJob *job.Job) (bool, error) {
 }
 
 func (rs *runState) recordOutcome(currentJob *job.Job, status job.Status) {
-	rs.mutex.Lock()
-	defer rs.mutex.Unlock()
-
 	switch status {
 	case job.StatusSuccess:
-		rs.summary.Succeeded++
-
-		return
+		rs.stats.RecordSucceeded()
 	case job.StatusTimeout:
-		rs.summary.TimedOut++
+		rs.stats.RecordTimedOut(currentJob)
+
+		if rs.cfg.FailFast {
+			rs.launchStop()
+		}
 	case job.StatusFailure:
 		fallthrough
 	default:
-		rs.summary.Failed++
-	}
+		rs.stats.RecordFailed(currentJob)
 
-	rs.summary.FailedJobs = append(rs.summary.FailedJobs, currentJob)
-
-	if rs.cfg.FailFast {
-		rs.launchStop()
+		if rs.cfg.FailFast {
+			rs.launchStop()
+		}
 	}
 }
 
@@ -94,14 +78,14 @@ func (rs *runState) processJob(execCtx context.Context, interruptCtx context.Con
 	result := execute(execCtx, interruptCtx, rs.cfg, currentJob)
 
 	rs.recordOutcome(currentJob, result.Status)
-	rs.cfg.Output.IncProgress(result.Status)
+	rs.cfg.Output.RefreshProgress()
 
 	if rs.cfg.Checkpoint != nil {
 		recordErr := rs.cfg.Checkpoint.Record(currentJob.Dir, result)
 		if recordErr != nil {
-			rs.mutex.Lock()
+			rs.runErrMu.Lock()
 			rs.runErr = errors.Join(rs.runErr, fmt.Errorf("checkpoint record: %w", recordErr))
-			rs.mutex.Unlock()
+			rs.runErrMu.Unlock()
 		}
 	}
 }
@@ -110,19 +94,21 @@ func (rs *runState) processJob(execCtx context.Context, interruptCtx context.Con
 // execCtx controls force-killing running jobs (cancelled by 3rd Ctrl+C or timeout).
 // interruptCtx controls graceful interruption (cancelled by 2nd Ctrl+C, sends SIGINT).
 // launchCtx controls new job launches (cancelled by 1st Ctrl+C or fail-fast).
+// stats is the shared accounting object; mutated as jobs complete.
 func Run(
 	execCtx context.Context,
 	interruptCtx context.Context,
 	launchCtx context.Context,
 	cfg Config,
 	jobs []*job.Job,
-) (*Summary, error) {
+	stats *job.Stats,
+) error {
 	innerLaunchCtx, innerLaunchStop := context.WithCancel(launchCtx)
 	defer innerLaunchStop()
 
 	state := &runState{
 		cfg:        cfg,
-		summary:    &Summary{Total: len(jobs)},
+		stats:      stats,
 		launchStop: innerLaunchStop,
 	}
 
@@ -137,7 +123,7 @@ func Run(
 
 		skipped, checkErr := state.skipIfCheckpointed(currentJob)
 		if checkErr != nil {
-			return state.summary, checkErr
+			return checkErr
 		}
 
 		if skipped {
@@ -164,7 +150,7 @@ func Run(
 
 	waitGroup.Wait()
 
-	return state.summary, state.runErr
+	return state.runErr
 }
 
 func execute(

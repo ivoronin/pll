@@ -154,27 +154,29 @@ func runJobs(
 
 	startTime := time.Now()
 
-	summary, runErr := executeJobs(allJobs, *jobs, interactive, *bufferMode,
+	stats, runErr := executeJobs(allJobs, *jobs, interactive, *bufferMode,
 		checkpointPath, progress, timeout, failFast)
 	elapsed := time.Since(startTime)
 
-	return reportResults(summary, runErr, elapsed)
+	return reportResults(stats, runErr, elapsed)
 }
 
-func reportResults(summary *runner.Summary, runErr error, elapsed time.Duration) int {
+func reportResults(stats *job.Stats, runErr error, elapsed time.Duration) int {
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "pll: %v\n", runErr)
 	}
 
-	for _, j := range summary.FailedJobs {
+	for _, j := range stats.FailedJobs {
 		fmt.Fprintf(os.Stderr, "pll: job failed: '%s' in '%s'\n", j.Command, j.Dir)
 	}
 
-	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d timed out, %d skipped (total: %d) in %s\n",
-		summary.Succeeded, summary.Failed, summary.TimedOut, summary.Skipped,
-		summary.Total, elapsed.Round(time.Second))
+	snap := stats.Snapshot()
 
-	if summary.Failed > 0 || summary.TimedOut > 0 || runErr != nil {
+	fmt.Fprintf(os.Stderr, "pll: %d succeeded, %d failed, %d timed out, %d skipped (total: %d) in %s\n",
+		snap.Succeeded, snap.Failed, snap.TimedOut, snap.Skipped,
+		snap.Total, elapsed.Round(time.Second))
+
+	if snap.Failed > 0 || snap.TimedOut > 0 || runErr != nil {
 		return 1
 	}
 
@@ -262,12 +264,13 @@ func executeJobs(
 	progress bool,
 	timeout time.Duration,
 	failFast bool,
-) (*runner.Summary, error) {
+) (*job.Stats, error) {
 	mode := output.Mode(bufferMode)
-	factory := output.NewFactory(mode)
+	factory := output.New(mode)
+	stats := job.NewStats(len(allJobs))
 
 	if progress {
-		factory.EnableProgress(len(allJobs))
+		factory.EnableProgress(stats)
 		defer factory.DoneProgress()
 	}
 
@@ -282,7 +285,7 @@ func executeJobs(
 	if checkpointPath != "" {
 		store, err := checkpoint.Open(checkpointPath)
 		if err != nil {
-			return &runner.Summary{Total: len(allJobs)}, err
+			return stats, err
 		}
 
 		defer func() {
@@ -296,13 +299,13 @@ func executeJobs(
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 
-		return runner.Run(ctx, ctx, ctx, cfg, allJobs)
+		return stats, runner.Run(ctx, ctx, ctx, cfg, allJobs, stats)
 	}
 
-	return executeParallel(cfg, allJobs)
+	return stats, executeParallel(cfg, allJobs, stats)
 }
 
-func executeParallel(cfg runner.Config, allJobs []*job.Job) (*runner.Summary, error) {
+func executeParallel(cfg runner.Config, allJobs []*job.Job, stats *job.Stats) error {
 	sigCh := make(chan os.Signal, 3)
 
 	signal.Notify(sigCh, os.Interrupt)
@@ -345,5 +348,5 @@ func executeParallel(cfg runner.Config, allJobs []*job.Job) (*runner.Summary, er
 		}
 	}()
 
-	return runner.Run(execCtx, interruptCtx, launchCtx, cfg, allJobs)
+	return runner.Run(execCtx, interruptCtx, launchCtx, cfg, allJobs, stats)
 }

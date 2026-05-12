@@ -1,11 +1,10 @@
-// Package output provides output buffering for parallel job execution.
+// Package output provides output buffering and progress rendering for parallel job execution.
 package output
 
 import (
 	"bytes"
 	"io"
 	"os"
-	"sync"
 
 	"github.com/ivoronin/pll/internal/job"
 )
@@ -30,68 +29,49 @@ type Writers struct {
 	Flush  func()
 }
 
-// Factory creates Writers for each job based on the buffering mode.
-type Factory struct {
-	mode     Mode
-	mu       sync.Mutex
-	progress *Progress
+// Output coordinates per-job writers and the optional progress bar around stderr/stdout.
+type Output struct {
+	mode Mode
+	term *terminal
 }
 
-// NewFactory creates a Factory with the specified buffering mode.
-func NewFactory(mode Mode) *Factory {
-	return &Factory{mode: mode}
+// New creates an Output with the specified buffering mode and no progress bar.
+func New(mode Mode) *Output {
+	return &Output{mode: mode, term: &terminal{}}
 }
 
-// EnableProgress activates a progress bar on stderr with the given total job count.
-func (f *Factory) EnableProgress(total int) {
-	f.progress = newProgress(&f.mu, total)
+// EnableProgress activates a progress bar on stderr that reads from the given stats.
+func (o *Output) EnableProgress(stats *job.Stats) {
+	o.term.progress = newProgressBar(o.term, stats)
 }
 
-// IncProgress increments the progress bar by one completed job, bucketed by status.
-func (f *Factory) IncProgress(status job.Status) {
-	if f.progress == nil {
-		return
-	}
-
-	switch status {
-	case job.StatusSuccess:
-		f.progress.Inc(0, 0, 0)
-	case job.StatusTimeout:
-		f.progress.Inc(0, 1, 0)
-	case job.StatusFailure:
-		fallthrough
-	default:
-		f.progress.Inc(1, 0, 0)
-	}
-}
-
-// IncSkippedProgress increments the progress bar by one skipped job.
-func (f *Factory) IncSkippedProgress() {
-	if f.progress != nil {
-		f.progress.IncSkipped()
+// RefreshProgress requests an immediate redraw of the progress bar (no-op when disabled).
+func (o *Output) RefreshProgress() {
+	if o.term.progress != nil {
+		o.term.progress.refresh()
 	}
 }
 
 // DoneProgress clears the progress bar and disables further drawing.
-func (f *Factory) DoneProgress() {
-	if f.progress != nil {
-		f.progress.Done()
+func (o *Output) DoneProgress() {
+	if o.term.progress != nil {
+		o.term.progress.Done()
 	}
 }
 
 // NewWriters creates a new set of writers for a single job.
-func (f *Factory) NewWriters() *Writers {
-	switch f.mode {
+func (o *Output) NewWriters() *Writers {
+	switch o.mode {
 	case ModeNone:
 		return &Writers{
-			Stdout: f.wrapLocked(os.Stdout),
-			Stderr: f.wrapLocked(os.Stderr),
+			Stdout: o.wrapLocked(os.Stdout),
+			Stderr: o.wrapLocked(os.Stderr),
 			Flush:  func() {},
 		}
 	case ModeLine:
 		return &Writers{
-			Stdout: &lineWriter{mu: &f.mu, dest: f.wrapDest(os.Stdout)},
-			Stderr: &lineWriter{mu: &f.mu, dest: f.wrapDest(os.Stderr)},
+			Stdout: &lineWriter{term: o.term, dest: o.wrapDest(os.Stdout)},
+			Stderr: &lineWriter{term: o.term, dest: o.wrapDest(os.Stderr)},
 			Flush:  func() {},
 		}
 	case ModeJob:
@@ -101,18 +81,18 @@ func (f *Factory) NewWriters() *Writers {
 			Stdout: &stdoutBuf,
 			Stderr: &stderrBuf,
 			Flush: func() {
-				f.mu.Lock()
-				defer f.mu.Unlock()
+				o.term.mu.Lock()
+				defer o.term.mu.Unlock()
 
-				if f.progress != nil {
-					f.progress.clear()
+				if o.term.progress != nil {
+					o.term.progress.clear()
 				}
 
 				_, _ = stdoutBuf.WriteTo(os.Stdout)
 				_, _ = stderrBuf.WriteTo(os.Stderr)
 
-				if f.progress != nil {
-					f.progress.draw()
+				if o.term.progress != nil {
+					o.term.progress.draw()
 				}
 			},
 		}
@@ -122,28 +102,28 @@ func (f *Factory) NewWriters() *Writers {
 }
 
 // wrapDest returns a clearingWriter if progress is enabled, otherwise returns dest as-is.
-// The caller must hold the mutex.
-func (f *Factory) wrapDest(dest io.Writer) io.Writer {
-	if f.progress != nil {
-		return &clearingWriter{dest: dest, progress: f.progress}
+// The caller must hold the terminal mutex.
+func (o *Output) wrapDest(dest io.Writer) io.Writer {
+	if o.term.progress != nil {
+		return &clearingWriter{dest: dest, term: o.term}
 	}
 
 	return dest
 }
 
 // wrapLocked returns a lockedWriter if progress is enabled, otherwise returns dest as-is.
-// The writer acquires the mutex itself.
-func (f *Factory) wrapLocked(dest io.Writer) io.Writer {
-	if f.progress != nil {
-		return &lockedWriter{dest: dest, progress: f.progress}
+// The writer acquires the terminal mutex itself.
+func (o *Output) wrapLocked(dest io.Writer) io.Writer {
+	if o.term.progress != nil {
+		return &lockedWriter{dest: dest, term: o.term}
 	}
 
 	return dest
 }
 
-// lineWriter writes complete lines atomically under a shared mutex.
+// lineWriter writes complete lines atomically under the terminal mutex.
 type lineWriter struct {
-	mu   *sync.Mutex
+	term *terminal
 	dest io.Writer
 	buf  []byte
 }
@@ -159,9 +139,9 @@ func (lw *lineWriter) Write(data []byte) (int, error) {
 
 		line := lw.buf[:idx+1]
 
-		lw.mu.Lock()
+		lw.term.mu.Lock()
 		_, writeErr := lw.dest.Write(line)
-		lw.mu.Unlock()
+		lw.term.mu.Unlock()
 
 		if writeErr != nil {
 			return len(data), writeErr
