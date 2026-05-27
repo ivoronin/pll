@@ -190,6 +190,8 @@ func execute(
 
 	startErr := cmd.Start()
 	if startErr != nil {
+		fmt.Fprintf(writers.Stderr, "pll: failed to start: %v\n", startErr)
+
 		return job.Result{Status: job.StatusFailure, ExitCode: 1}
 	}
 
